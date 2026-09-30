@@ -1,0 +1,36 @@
+# https://docs.devin.ai/onboard-devin/environment-yaml
+# JHipster 9 monolith: Java 21 Spring Boot backend + Angular 21 frontend. Commands run from repo root.
+# One-time setup (e.g., install system tools, global CLIs).
+initialize: |
+  sudo apt-get update && sudo apt-get install -y openjdk-21-jdk-headless
+  grep -q "java-21-openjdk" ~/.bashrc || printf '\nexport JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64\nexport PATH="$JAVA_HOME/bin:$PATH"\n' >> ~/.bashrc
+  export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install 24.13.0 && nvm alias default 24.13.0
+# Install project dependencies (runs during builds, surfaced to agent at session start).
+maintenance: |
+  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 && export PATH="$JAVA_HOME/bin:$PATH"
+  ./npmw install
+# Reference info for agent
+knowledge:
+  - name: run-backend
+    contents: |
+      # Spring Boot backend (dev profile, in-memory H2, port 8080):
+      ./npmw run backend:start
+      # Verify: curl http://localhost:8080/management/health  ->  {"status":"UP"}
+  - name: run-frontend
+    contents: |
+      # Angular dev server (Browsersync proxy on http://localhost:9000, ng serve on 9060):
+      ./npmw run start
+      # Proxies /api and /management to backend on 8080. Default creds: admin/admin, user/user.
+  - name: database
+    contents: |
+      # Dev profile uses in-memory H2 (no DB needed). Prod uses PostgreSQL 18.1:
+      docker compose -f src/main/docker/postgresql.yml up -d   # 127.0.0.1:5432
+  - name: build
+    contents: |
+      # ./mvnw -Pprod clean verify   (prod jar)  |  ./npmw run webapp:build:dev (frontend)
+  - name: test
+    contents: |
+      # ./mvnw verify   (backend)   |   ./npmw test   (Vitest frontend)
+  - name: lint
+    contents: |
+      # ./npmw run lint
