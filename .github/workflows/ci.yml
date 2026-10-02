@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: temurin
+  # Matches <node.version> in pom.xml and "engines" in package.json
+  NODE_VERSION: '24.13.0'
+  MAVEN_ARGS: -ntp --batch-mode
+
+jobs:
+  frontend:
+    name: Frontend (lint, test, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (ESLint)
+        run: npm run lint
+
+      - name: Format check (Prettier)
+        run: npm run prettier:check
+
+      - name: Unit tests (Vitest)
+        # `npm test` would re-run ESLint via the pretest hook; call the test target directly.
+        run: npx ng test --coverage
+
+      - name: Build (production)
+        run: npm run webapp:build:prod
+
+      - name: Upload frontend test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-test-results
+          path: target/test-results/
+          if-no-files-found: warn
+
+  backend:
+    name: Backend (lint, build, test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Maven info
+        run: ./mvnw --version
+
+      - name: Lint (Checkstyle / nohttp)
+        run: ./mvnw checkstyle:check
+
+      - name: Javadoc
+        run: ./mvnw javadoc:javadoc
+
+      - name: Build and test (unit + integration, Testcontainers PostgreSQL)
+        # Same as `npm run ci:backend:test`; the frontend is built and tested in the frontend job.
+        run: >-
+          ./mvnw -Pprod -Dskip.installnodenpm -Dskip.npm verify
+          -Dlogging.level.ROOT=OFF -Dlogging.level.tech.jhipster=OFF
+          -Dlogging.level.io.github.jhipster.sample=OFF -Dlogging.level.org.springframework=OFF
+          -Dlogging.level.org.springframework.web=OFF -Dlogging.level.org.springframework.security=OFF
+
+      - name: Upload backend test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-test-reports
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/site/jacoco/
+            target/site/jacoco-it/
+          if-no-files-found: warn
+
+      - name: Upload compiled classes (for SonarQube)
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-classes
+          path: target/classes/
+          retention-days: 3
+
+  package:
+    name: Package (jar + Docker image)
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Package production jar
+        # Same as `npm run java:jar:prod`; frontend-maven-plugin installs Node and builds the webapp.
+        run: ./mvnw -Pprod -DskipTests verify
+
+      - name: Build Docker image to tarball (Jib, no push)
+        run: ./mvnw -Pprod -DskipTests jib:buildTar -Djib.outputPaths.tar=target/jib-image.tar
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: app-jar
+          path: target/*.jar
+          if-no-files-found: error
+
+      - name: Upload Docker image tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-image
+          path: target/jib-image.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  sonarqube:
+    name: SonarQube scan
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || secrets.SONAR_HOST_URL }}
+    steps:
+      - name: Skip notice
+        if: env.SONAR_TOKEN == ''
+        run: echo "::notice::SONAR_TOKEN secret is not configured; skipping SonarQube scan."
+
+      - uses: actions/checkout@v7
+        if: env.SONAR_TOKEN != ''
+        with:
+          fetch-depth: 0
+
+      - name: Download backend classes
+        if: env.SONAR_TOKEN != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: backend-classes
+          path: target/classes
+
+      - name: Download backend test reports
+        if: env.SONAR_TOKEN != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: backend-test-reports
+          path: target
+
+      - name: Download frontend test results
+        if: env.SONAR_TOKEN != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-test-results
+          path: target/test-results
+
+      - name: SonarQube scan
+        if: env.SONAR_TOKEN != ''
+        uses: SonarSource/sonarqube-scan-action@v8
+        with:
+          # sonar-project.properties provides the rest of the configuration.
+          args: >
+            -Dsonar.host.url=${{ env.SONAR_HOST_URL }}
+            -Dsonar.java.binaries=target/classes
