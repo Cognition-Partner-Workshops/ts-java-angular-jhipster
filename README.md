@@ -2,6 +2,10 @@
 
 This application was generated using JHipster 9.0.0-beta.3, you can find documentation and help at [https://www.jhipster.tech/documentation-archive/v9.0.0-beta.3](https://www.jhipster.tech/documentation-archive/v9.0.0-beta.3).
 
+## Documentation
+
+High-level project documentation (architecture, testing, development environment, deployment) is available in [docs/README.md](docs/README.md).
+
 ## Project Structure
 
 Node is required for generation and recommended for development. `package.json` is always generated for a better development experience with prettier, commit hooks, scripts and so on.
